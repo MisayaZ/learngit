@@ -29,8 +29,8 @@ classes_ = 20
 deep_ = classes_ + coord_
 input_size_ = 416
 batch_size = 16
-thresh = 0.2
-iouThresh = 0.2
+thresh = 0.24
+iouThresh = 0.4
 train_file1 = "train.txt"
 test_file = "2007_test.txt"
 TOWER_NAME = 'tower'
@@ -64,6 +64,27 @@ def imcv2_recolor(im, a = .1):
     im = np.power(im/mx, 1. + up * .5)
     return np.array(im * 255., np.uint8)
 
+def random_hsv_image(bgr_image, delta_hue, delta_sat_scale, delta_val_scale):
+    hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+    # hue
+    hsv_image[:, :, 0] += int((np.random.rand() * delta_hue * 2 - delta_hue) * 255)
+
+    # sat
+    sat_scale = 1 + np.random.rand() * delta_sat_scale * 2 - delta_sat_scale
+    hsv_image[:, :, 1] *= sat_scale
+
+    # val
+    val_scale = 1 + np.random.rand() * delta_val_scale * 2 - delta_val_scale
+    hsv_image[:, :, 2] *= val_scale
+
+    hsv_image[hsv_image < 0] = 0 
+    hsv_image[hsv_image > 255] = 255 
+    hsv_image = hsv_image.astype(np.uint8)
+    bgr_image = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2BGR)
+    return bgr_image
+
+
 def generate_posarray():
     base = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     a = [base] * 13
@@ -91,7 +112,7 @@ def constrain(mindata,maxdata,data):
         data = maxdata
     return data
 
-def makelabeldata(labelpath,sx,sy,dx,dy):
+def makelabeldata(labelpath,sx,sy,dx,dy,flip):
     probs = np.zeros([H*W,B,C])
     confs = np.zeros([H*W,B])
     coord = np.zeros([H*W,B,4])
@@ -118,6 +139,10 @@ def makelabeldata(labelpath,sx,sy,dx,dy):
         right  = right * sx - dx
         top    = top   * sy - dy
         bottom = bottom* sy - dy
+
+        if flip :
+            left, right = 1. - right, 1. - left
+
         left =  constrain(0, 1, left)
         right = constrain(0, 1, right)
         top =   constrain(0, 1, top)
@@ -143,10 +168,10 @@ def makelabeldata(labelpath,sx,sy,dx,dy):
         probs[index, :, types] = 1.
         proid[index, :, :] = [[1.]*C] * B
         coord[index, :, :] = [[x_cell, y_cell, np.sqrt(w), np.sqrt(h)]] * B
-        prear[index, 0] = x_cell - w * .5 * W # xleft
-        prear[index, 1] = y_cell - h * .5 * H # yup
-        prear[index, 2] = x_cell + w  * .5 * W # xright
-        prear[index, 3] = y_cell + h * .5 * H # ybot
+        prear[index, 0] = 0 - w * .5   # xleft
+        prear[index, 1] = 0 - h * .5   # yup
+        prear[index, 2] = 0 + w * .5  # xright
+        prear[index, 3] = 0 + h * .5   # ybot
         confs[index, :] = [1.] * B
 
     # Finalise the placeholders' values
@@ -266,18 +291,21 @@ def testimageload():
             feed_batch[key] = np.concatenate([old_feed, [new]])
     return dataset, feed_batch
 
-def imageloadOne():
+def imageloadOne(shuffle_idx, batch_index):
     dataset = np.ndarray(shape=(batch_size, input_size_, input_size_, 3), dtype=np.float32)
     labels = np.ndarray(shape=(batch_size,BBNum*(classes_+1+coord_)), dtype=np.float32)
     ResizeSize = (input_size_, input_size_)
     feed_batch = dict()
-    for i in range(0, batch_size):
-        orig = cv2.imread(imagepath[i])
+    for i in range(batch_size*batch_index, batch_size*batch_index + batch_size):
+        orig = cv2.imread(imagepath[shuffle_idx[i]])
         orig = cv2.resize(orig,ResizeSize)
         orig = orig / 255.0
         #orig = orig * 2.0 -1.0
-        dataset[i,:,:,:] = orig
-        new_feed = makelabeldata(labepath[i],1.0,1.0,0.0,0.0)
+        flip = np.random.randint(0, 2)
+        if flip :
+            orig = cv2.flip(orig, 1)
+        dataset[i-batch_size*batch_index,:,:,:] = orig
+        new_feed = makelabeldata(labepath[shuffle_idx[i]],1.0,1.0,0.0,0.0,flip)
         for key in new_feed:
             new = new_feed[key]
             old_feed = feed_batch.get(key, np.zeros((0,) + new.shape))
@@ -294,10 +322,10 @@ def imageloadRandom(shuffle_idx, batch_index):
           orig = cv2.imread(imagepath[shuffle_idx[i]])
           # print imagepath[0]
           #orig = cv2.resize(orig,ResizeSize)
-          orig = imcv2_recolor(orig)
+          orig = random_hsv_image(orig, 0.01, 0.5, 0.5)
           oh = orig.shape[0]
           ow = orig.shape[1]
-          jitter = 0.1
+          jitter = 0.2
           dw = (ow*jitter)
           dh = (oh*jitter)
           pleft  = int(np.random.uniform(-dw, dw))
@@ -322,48 +350,18 @@ def imageloadRandom(shuffle_idx, batch_index):
           crop_img = crop_img / 255.0 #* random.uniform(0.7, 1.2)
           crop_img = cv2.copyMakeBorder(crop_img, pad_top,pad_botton,pad_left,pad_right, cv2.BORDER_CONSTANT, value=0)
           crop_img = cv2.resize(crop_img,ResizeSize)
+          flip = np.random.randint(0, 2)
+          if flip :
+              crop_img = cv2.flip(crop_img, 1)
           dataset[i-batch_size*batch_index,:,:,:] = crop_img
           dx = 1.0*pleft/ow/sx
           dy = 1.0*ptop /oh/sy
-          new_feed = makelabeldata(labepath[shuffle_idx[i]],1.0/sx,1.0/sy,dx,dy)
+          new_feed = makelabeldata(labepath[shuffle_idx[i]],1.0/sx,1.0/sy,dx,dy,flip)
           for key in new_feed:
               new = new_feed[key]
               old_feed = feed_batch.get(key, np.zeros((0,) + new.shape))
               feed_batch[key] = np.concatenate([old_feed, [new]])
       return dataset, feed_batch
-
-def convertdetections(predictions):
-    probs = np.zeros(shape=(BBNum*num,classes_), dtype=np.float32)
-    boxes = np.zeros(shape=(BBNum*num,4), dtype=np.float32)
-    for i in range(0,BBNum):
-        for n in range(0,num):
-            row = i / side_
-            col = i % side_
-            index = i*num+n
-            pindex =BBNum*classes_ + i*num + n
-            scale = predictions[pindex]
-            if scale < 0.02:
-                continue
-            box_index = BBNum*(classes_ + num) + (i*num+n)*4
-            if predictions[box_index + 2]<0.01 or predictions[box_index + 3]<0.01 :
-                continue
-            if predictions[box_index + 2]/predictions[box_index + 3]<0.25 or   predictions[box_index + 2]/predictions[box_index + 3]>4.0 :
-                print 'error w/h'
-                #continue
-            print "i:%f n:%f p:%f x:%f y:%f w:%f h:%f\n"%(i,n,scale,predictions[box_index + 0] ,predictions[box_index + 1] ,predictions[box_index + 2] ,predictions[box_index + 3] )
-            boxes[index,0] = (predictions[box_index + 0] + col) / side_
-            boxes[index,1] = (predictions[box_index + 1] + row) / side_
-            boxes[index,2] = predictions[box_index + 2]
-            boxes[index,3] = predictions[box_index + 3]
-            print boxes[index]
-            for j in range(0,classes_):
-                class_index = j*classes_
-                if classes_==1:
-                    predictions[class_index+j]=1
-                prob = scale#*predictions[class_index+j]
-                #if prob > thresh:
-                probs[i*num+n][j] = prob
-    return probs,boxes
 
 def  overlap( x1,  w1,  x2,  w2):
      l1 = x1 - w1/2
@@ -512,7 +510,7 @@ class YOLO_TF:
         #    self.train_writer = tf.summary.FileWriter('log', self.sess.graph)
         self.sess.run(init)
 
-        self.checkpoint = tf.train.get_checkpoint_state("train_weight_pretrain")
+        self.checkpoint = tf.train.get_checkpoint_state("train_weight")
         if self.checkpoint and self.checkpoint.model_checkpoint_path:
             self.saver.restore(self.sess, self.checkpoint.model_checkpoint_path)
             print "Successfully loaded:", self.checkpoint.model_checkpoint_path
@@ -576,20 +574,16 @@ class YOLO_TF:
 
         adjusted_net_out = tf.concat(3, [adjusted_coords_xy, adjusted_coords_wh, adjusted_c, adjusted_prob])        
 
-        wh = tf.pow(coords[:,:,:,2:4], 2) *  np.reshape([W, H], [1, 1, 1, 2])
+        wh = np.reshape(anchors, [1, 1, B, 2]) / np.reshape([W, H], [1, 1, 1, 2])
+        wh = tf.constant(wh, dtype=tf.float32)
+        #wh = tf.pow(coords[:,:,:,2:4], 2) *  np.reshape([W, H], [1, 1, 1, 2])
         area_pred = wh[:,:,:,0] * wh[:,:,:,1]
-        centers = coords[:,:,:,0:2]
+        #centers = coords[:,:,:,0:2]
+        centers = tf.zeros([1, 1, B, 2])
         floor = centers - (wh * .5)
         ceil  = centers + (wh * .5)
 
         # calculate the intersection areas
-        intersect_upleft   = tf.maximum(floor, _upleft)
-        intersect_botright = tf.minimum(ceil , _botright)
-        intersect_wh = intersect_botright - intersect_upleft
-        intersect_wh = tf.maximum(intersect_wh, 0.0)
-        intersect = tf.mul(intersect_wh[:,:,:,0], intersect_wh[:,:,:,1])
-
-        # calculate the best IOU, set 0.0 confidence for worse boxes
         intersect_upleft   = tf.maximum(floor, _upleft)
         intersect_botright = tf.minimum(ceil , _botright)
         intersect_wh = intersect_botright - intersect_upleft
@@ -768,17 +762,19 @@ class YOLO_TF:
                                initializer=initializer, regularizer=regularizer,
                                trainable=trainable, collections=collections)
 
-    def batch_norm_layer(self, x,train_phase,scope_bn):
-        bn_train = batch_norm(x, decay=0.999, center=True, scale=True,
+    def batch_norm_layer(self, x,train_phase, scope_bn):
+        bn_train = batch_norm(x, decay=0.9, center=False, scale=True,
         updates_collections=None,
         is_training=True,
-        reuse=None, 
+        reuse=None,
+        variables_collections= UPDATE_OPS_COLLECTION,
         trainable=True,
         scope=scope_bn)
-        bn_inference = batch_norm(x, decay=0.999, center=True, scale=True,
+        bn_inference = batch_norm(x, decay=0.9, center=False, scale=True,
         updates_collections=None,
         is_training=False,
-        reuse=True, 
+        reuse=True,
+        variables_collections= UPDATE_OPS_COLLECTION,
         trainable=True,
         scope=scope_bn)
         z = tf.cond(train_phase, lambda: bn_train, lambda: bn_inference)
@@ -891,7 +887,7 @@ class YOLO_TF:
             input_h,input_w,channels = inputs.get_shape().as_list()[1:]
             scale = tf.sqrt(2.0/ (size*size*channels))
             weight = tf.get_variable("weights", shape=[size, size, channels, filters], initializer=tf.random_uniform_initializer(-scale, scale))
-            #biases = tf.get_variable("biases", shape=[filters], initializer=tf.constant_initializer(0.0))
+            biases = tf.get_variable("biases", shape=[filters], initializer=tf.constant_initializer(0.0))
 
             pad_size = size//2
             pad_mat = np.array([[0,0],[pad_size,pad_size],[pad_size,pad_size],[0,0]])
@@ -899,14 +895,14 @@ class YOLO_TF:
 
             conv = tf.nn.conv2d(inputs_pad, weight, strides=[1, stride, stride, 1], padding='VALID')
             conv_bn = self.batch_norm_layer(conv, self.train_phase, "batch_norm")    
-            #conv_biased = tf.add(conv_bn,biases)
+            conv_biased = tf.add(conv_bn,biases)
 
             tf.summary.histogram("weights", weight)
-            #tf.summary.histogram("biases", biases)
-            output_h, output_w, output_channels = conv_bn.get_shape()[1:]    
+            tf.summary.histogram("biases", biases)
+            output_h, output_w, output_channels = conv_biased.get_shape()[1:]    
             if self.disp_console : print '    Layer  {} : size={}x{}/{}, input = {}x{}x{} -> output = {}x{}x{}'.format(name,size,size,stride, input_w, input_h, channels, output_w, output_h, output_channels)
-            if linear : return conv_bn, weight
-            return tf.maximum(self.alpha*conv_bn,conv_bn), weight
+            if linear : return conv_biased, weight
+            return tf.maximum(self.alpha*conv_biased,conv_biased), weight
 
     def conv_layer1(self,idx,inputs,filters,size,stride):
         channels = inputs.get_shape()[3]
@@ -961,8 +957,8 @@ class YOLO_TF:
         inputs = np.zeros((1,416,416,3),dtype='float32')
         inputs[0] = img_resized_np/255.0
         #inputs[0] = img_resized
-        in_dict = {self.image: inputs, self.train_phase : True}
-        #moving_mean = tf.get_collection(tf.GraphKeys.MOVING_AVERAGE_VARIABLES)
+        in_dict = {self.image: inputs, self.train_phase : False}
+        moving_mean = tf.get_collection(UPDATE_OPS_COLLECTION)
         net_output,conv_9 = self.sess.run([self.yolopred, self.conv_9], feed_dict=in_dict)
         strtime = str(time.time()-s)
         print net_output[0,7,6,79:100]
@@ -1089,13 +1085,13 @@ class YOLO_TF:
                 #_, test_summary = self.sess.run([self.loss, self.loss_summary], feed_dict=test_in_dict)
                 #test_writer.add_summary(test_summary, global_step=i)
             if i % 1000 == 0:
-                self.saver.save(self.sess, 'train_weight_pretrain/'+'Record_2E', global_step=self.global_step)
+                self.saver.save(self.sess, 'train_weight/'+'Record_2E', global_step=self.global_step)
             if i % 10000 == 0 and i != 0:
                 
-                #eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
-                #f = open("mAP.txt", 'a+')
-                #print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
-                #f.close()
+                eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
+                f = open("mAP.txt", 'a+')
+                print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
+                f.close()
                 print "hahahahah!"
             batch_index += 1   
 
@@ -1105,76 +1101,6 @@ class YOLO_TF:
     def testAP(self): #TODO add training function!
         EVA_TF(self.sess, self.image, self.train_phase,  self.yolopred)
         return None
-        
-    def Aimage(self): #TODO add training function!
-       showsize = 400
-       llistfile = "TestImageList.txt"
-       with open(llistfile,'rU') as f:
-         imagepaths = [word.strip('\n') for word in f]
-       m = len(imagepaths)
-       for i in xrange(m):
-           testimagefile= imagepaths[i]
-           #testimagefile= "testimage/"+str(i)+".jpg"
-           print testimagefile
-           image_data = cv2.imread(testimagefile)
-           crop_img =2.0 * image_data / 255.0 - 1.0 
-           if image_data.shape[0]<image_data.shape[1]:
-               pad_top = (image_data.shape[1]-image_data.shape[0])/2
-               pad_botton = pad_top
-               pad_left=0
-               pad_right = 0
-           else:
-               pad_left = (image_data.shape[0]-image_data.shape[1])/2
-               pad_right = pad_left
-               pad_top=0
-               pad_botton = 0
-           crop_img = cv2.copyMakeBorder(crop_img, pad_top,pad_botton,pad_left,pad_right, cv2.BORDER_CONSTANT, value=0)
-           ResizeSize = (input_size_, input_size_)
-           crop_img = cv2.resize(crop_img,ResizeSize)
-
-           imageIn = np.asarray( crop_img )
-           dataset = np.ndarray(shape=(1, input_size_, input_size_, 3), dtype=np.float32)
-           dataset[0] = np.float32(imageIn)
-           feed_dict = {self.image : dataset}
-           den2  = self.sess.run([self.fc_19], feed_dict=feed_dict)
-           output = den2[0][0]
-           probs,boxes = convertdetections(output)
-           probs=do_nms_sort(boxes, probs)
-           img = cv2.resize(cv2.copyMakeBorder(image_data, pad_top,pad_botton,pad_left,pad_right, cv2.BORDER_CONSTANT, value=0),(showsize,showsize))
-           for j in range(0,BBNum*num):
-               cls =np.argmax(probs[j])
-               prob = probs[j][cls]
-               if prob<thresh:
-                   continue
-
-               print boxes[j][0],boxes[j][1],boxes[j][2],boxes[j][3]
-               left  = int((boxes[j][0]-(boxes[j][2]/2.))*showsize)
-               right = int((boxes[j][0]+(boxes[j][2]/2.))*showsize)
-               top   = int((boxes[j][1]-(boxes[j][3]/2.))*showsize)
-               bot   = int((boxes[j][1]+(boxes[j][3]/2.))*showsize)
-               print cls,prob,left,top,right,bot
-               if(left < 0) :
-                   left = 0
-               if(right > showsize-1):
-                   right = showsize-1
-               if(top < 0):
-                   top = 0
-               if(bot > showsize-1):
-                   bot = showsize-1
-
-               lefttop = (left,top)
-               rightbottom=(right,bot)
-               #cv2.rectangle(img,lefttop,rightbottom,(cls*60,cls*100,cls//2*100),int(10*prob))
-               cv2.rectangle(img,lefttop,rightbottom,(100,255,100),int(5*prob))
-           #cv2.namedWindow("predicition")
-           #cv2.imshow("predicition", img   )
-           savefilename = str(i)
-           cv2.imwrite("results/"+savefilename+"_result.jpg", img)
-           #cv2.waitKey (0)
-           cv2.destroyAllWindows()
-       return None
-    
-            
 
 def main(argvs):
     yolo = YOLO_TF(argvs)
