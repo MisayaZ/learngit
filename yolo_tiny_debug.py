@@ -122,6 +122,9 @@ def makelabeldata(labelpath,sx,sy,dx,dy,flip):
     #read
     with open(labelpath,'rU') as f:
         labelpatch = [word.strip('\n').split() for word in f if word!='']
+    objectNum = 0
+    shape = [30, H*W, B, 4]
+    global_coord = np.zeros(shape)
 
     for NumObj in xrange(len(labelpatch)):
         types = int(labelpatch[NumObj][0])
@@ -167,12 +170,16 @@ def makelabeldata(labelpath,sx,sy,dx,dy,flip):
         probs[index, :, :] = [[0.]*C] * B
         probs[index, :, types] = 1.
         proid[index, :, :] = [[1.]*C] * B
-        coord[index, :, :] = [[x_cell, y_cell, np.sqrt(w), np.sqrt(h)]] * B
+        coord[index, :, :] = [[x_cell, y_cell, w, h]] * B
         prear[index, 0] = 0 - w * .5   # xleft
         prear[index, 1] = 0 - h * .5   # yup
         prear[index, 2] = 0 + w * .5  # xright
         prear[index, 3] = 0 + h * .5   # ybot
         confs[index, :] = [1.] * B
+        global_coord[objectNum,...] = [left, top, right, bottom]
+        objectNum = objectNum+1
+        if objectNum >= 30:
+            break
 
     # Finalise the placeholders' values
     upleft   = np.expand_dims(prear[:,0:2], 1)
@@ -182,13 +189,20 @@ def makelabeldata(labelpath,sx,sy,dx,dy,flip):
     upleft   = np.concatenate([upleft] * B, 1)
     botright = np.concatenate([botright] * B, 1)
     areas = np.concatenate([area] * B, 1)
+    global_upleft = global_coord[..., 0:2]
+    global_botright = global_coord[..., 2:4]
+    global_wh = global_botright - global_upleft
+    global_areas = global_wh[..., 0] * global_wh[..., 1]
+
     
     # value for placeholder at loss layer
     loss_feed_val = {
         'probs': probs, 'confs': confs, 
         'coord': coord, 'proid': proid,
         'areas': areas, 'upleft': upleft, 
-        'botright': botright
+        'botright': botright,
+        'global_upleft': global_upleft, 'global_botright': global_botright,
+        'global_wh': global_wh, 'global_areas': global_areas
     }
     return loss_feed_val
 '''
@@ -484,7 +498,7 @@ class YOLO_TF:
         self.conv_9, weight, biases = self.conv_layer("conv9",self.conv_8,125,1,1,linear=True)
         weight_list.append(weight)
         weight_list.append(biases)
-        self.loss  = self.yololoss(self.conv_9)
+        self.loss, self.best_box  = self.yololoss(self.conv_9)
         self.yolopred = self.yoloout(self.conv_9)
 
         #self.global_step = tf.get_variable('global_step', [], initializer=tf.constant_initializer(0), trainable=False)
@@ -502,7 +516,7 @@ class YOLO_TF:
         self.merged_summary_op = tf.summary.merge_all()
 
         # Create a saver.
-        self.saver = tf.train.Saver(tf.all_variables(), write_version = saver_pb2.SaverDef.V1)
+        self.saver = tf.train.Saver(tf.all_variables())
         init = tf.initialize_all_variables()
         self.sess = tf.Session()
        
@@ -540,6 +554,7 @@ class YOLO_TF:
     def yololoss(self, predictions):
         size1 = [None, HW, B, C]
         size2 = [None, HW, B]
+        size3 = [None, 30, HW, B]
 
         # return the below placeholders
         _probs = tf.placeholder(tf.float32, size1)
@@ -552,10 +567,18 @@ class YOLO_TF:
         _areas = tf.placeholder(tf.float32, size2)
         _upleft = tf.placeholder(tf.float32, size2 + [2])
         _botright = tf.placeholder(tf.float32, size2 + [2])
+
+        _global_upleft = tf.placeholder(tf.float32, size3 + [2]) 
+        _global_botright = tf.placeholder(tf.float32, size3 + [2])
+        _global_wh = tf.placeholder(tf.float32, size3 + [2])
+        _global_areas = tf.placeholder(tf.float32, size3)
+
        
         self.placeholders = {
         'probs':_probs, 'confs':_confs, 'coord':_coord, 'proid':_proid,
-        'areas':_areas, 'upleft':_upleft, 'botright':_botright
+        'areas':_areas, 'upleft':_upleft, 'botright':_botright,
+        'global_upleft':_global_upleft, 'global_botright':_global_botright, 
+        'global_wh':_global_wh, 'global_areas':_global_areas
         }
         
         # Extract the coordinate prediction from predictions
@@ -563,7 +586,7 @@ class YOLO_TF:
         coords = net_out_reshape[:, :, :, :, :4]
         coords = tf.reshape(coords, [-1, H*W, B, 4])
         adjusted_coords_xy = expit_tensor(coords[:,:,:,0:2])
-        adjusted_coords_wh = tf.sqrt(tf.exp(coords[:,:,:,2:4]) * np.reshape(anchors, [1, 1, B, 2]) / np.reshape([W, H], [1, 1, 1, 2]))
+        adjusted_coords_wh = tf.exp(coords[:,:,:,2:4]) * np.reshape(anchors, [1, 1, B, 2]) / np.reshape([W, H], [1, 1, 1, 2])
         coords = tf.concat(3, [adjusted_coords_xy, adjusted_coords_wh])
 
         adjusted_c = expit_tensor(net_out_reshape[:, :, :, :, 4])
@@ -595,9 +618,35 @@ class YOLO_TF:
         best_box = tf.equal(iou, tf.reduce_max(iou, [2], True))
         best_box = tf.to_float(best_box)
         confs = tf.mul(best_box, _confs)
+
+        # calculate the best IOU for every cell 
+        wh_pre = coords[:, :, :, 2:4]
+        area_pre = wh_pre[:, :, :, 0] * wh_pre[:, :, :, 1]
+        centers_pre = coords[:, :, :, 0:2]
+        transform_array = tf.reshape(tf.expand_dims(tf.constant(generate_posarray(), dtype=tf.float32), dim=2), [HW,1,2])
+        centers_pre = (centers_pre + transform_array) / 13.
+        floor_pre = centers_pre - (wh_pre * .5)
+        ceil_pre = centers_pre + (wh_pre * .5)
+
+        area_pre = tf.expand_dims(area_pre, axis = 1)
+        centers_pre = tf.expand_dims(centers_pre, axis = 1)
+        floor_pre = tf.expand_dims(floor_pre, axis = 1)
+        ceil_pre = tf.expand_dims(ceil_pre, axis = 1)
+        intersect_upleft_pre = tf.maximum(floor_pre, _global_upleft)
+        intersect_botright_pre = tf.minimum(ceil_pre, _global_botright)
+        intersect_wh_pre = intersect_botright_pre - intersect_upleft_pre
+        intersect_wh_pre = tf.maximum(intersect_wh_pre, 0.0)
+        intersect_pre = tf.mul(intersect_wh_pre[:, :, :, :, 0], intersect_wh_pre[:, :, :, :, 1])
+        iou_pre = tf.truediv(intersect_pre, _global_areas + area_pre - intersect_pre)
+        best_box_pre_tmp = tf.to_float(tf.equal(iou_pre, tf.reduce_max(iou_pre,[1], True)))
+        thresh_mask = tf.to_float(tf.greater(iou_pre, 0.6))
+        best_box_pre_tmp_ = tf.mul(best_box_pre_tmp, thresh_mask)
+        best_box_pre = tf.reduce_sum(best_box_pre_tmp_, 1)
+
+                
         
         # take care of the weight terms
-        conid = snoob * (1. - confs) + sconf * confs
+        conid = snoob * (1. - confs) * (1. - best_box_pre) + sconf * confs
         weight_coo = tf.concat(3, 4 * [tf.expand_dims(confs, -1)])
         cooid = scoor * weight_coo
         weight_pro = tf.concat(3, C * [tf.expand_dims(confs, -1)])
@@ -611,7 +660,7 @@ class YOLO_TF:
         loss = tf.reshape(loss, [-1, H*W*B*(4 + 1 + C)])
         loss = tf.reduce_sum(loss, 1)
         loss = .5 * tf.reduce_mean(loss)
-        return loss
+        return loss, iou_pre
 
     '''
     def yololoss(self,predictions):
@@ -1065,11 +1114,12 @@ class YOLO_TF:
             in_dict = {loss_ph[key]: datum[key] for key in loss_ph}
             in_dict[self.image] = dataset
             in_dict[self.train_phase] = True
-            _, loss, lr = self.sess.run([self.train_op, self.loss, self.lr],feed_dict=in_dict)
+            _, loss, lr, best_box = self.sess.run([self.train_op, self.loss, self.lr, self.best_box],feed_dict=in_dict)
             # print "count: %d coord loss : %f\n"%(countobj,coord)
             if i % 10 == 0:
                 lr = 0.001
                 print "Iter:%d Lr:%f Loss:%f"%(i, lr,loss)
+                #print best_box[0,0,...]
                 #f = open("out.txt", "w")
                 #print >>f, loss1
                 print '\n'
