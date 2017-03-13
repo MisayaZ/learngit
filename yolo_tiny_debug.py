@@ -31,7 +31,7 @@ input_size_ = 416
 batch_size = 16
 thresh = 0.24
 iouThresh = 0.4
-train_file1 = "train.txt"
+train_file1 = "train_16.txt"
 test_file = "2007_test.txt"
 TOWER_NAME = 'tower'
 anchors = [1.08, 1.19, 3.42, 4.41, 6.63, 11.38, 9.42, 5.11, 16.62, 10.52]
@@ -50,6 +50,41 @@ def expit_tensor(x):
 
 def logistic_activate(x):
     return 1.0 / (1.0 + np.exp(-x))
+
+def distort_image(bgr_image, hue, sat, val):
+    hsv_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+    # hue
+    hsv_image[:, :, 0] += int(hue * 179)
+
+    # sat
+    hsv_image[:, :, 1] *= sat
+
+    # val
+    hsv_image[:, :, 2] *= val
+
+    hsv_image[hsv_image[:,:,0] > 179, 0] -= 179
+    hsv_image[hsv_image[:,:,0] < 0, 0] += 179
+    hsv_image[hsv_image > 255] = 255
+    hsv_image[hsv_image < 0] = 0
+    hsv_image = hsv_image.astype(np.uint8)
+    bgr_image = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2BGR)
+    return bgr_image
+    
+
+def rand_scale(s):
+    scale = np.random.uniform(1, s)
+    rand = np.random.randint(0, 2)
+    if rand :
+        return scale
+    return 1./scale
+
+def random_distort_image(im, hue, saturation, exposure):
+    dhue = np.random.uniform(-hue, hue)
+    dsat = rand_scale(saturation)
+    dexp = rand_scale(exposure)
+    im = distort_image(im, dhue, dsat, dexp)
+    return im
 
 def imcv2_recolor(im, a = .1):
     t = [np.random.uniform()]
@@ -93,6 +128,31 @@ def generate_posarray():
     a = np.expand_dims(a, 2)
     b = np.expand_dims(b, 2)
     return np.concatenate([a, b], 2)
+
+def coord_iou(coords, _coords):
+    wh = coords[:, :, :, 2:4]
+    area = wh[:, :, :, 0] * wh[:, :, :, 1]
+    centers = coords[:, :, :, 0:2]
+    transform_array = tf.reshape(tf.expand_dims(tf.constant(generate_posarray(), dtype=tf.float32), dim=2), [HW,1,2])
+    centers = (centers + transform_array) / 13.
+    floor = centers - (wh * .5)
+    ceil = centers + (wh * .5)
+
+    _wh = _coords[:, :, :, 2:4]
+    _area = _wh[:, :, :, 0] * _wh[:, :, :, 1]
+    _centers = _coords[:, : , :, 0:2]
+    _centers= (_centers + transform_array) / 13.
+    _floor = _centers - (_wh * .5)
+    _ceil = _centers + (_wh * .5)
+
+    intersect_upleft   = tf.maximum(floor, _floor)
+    intersect_botright = tf.minimum(ceil , _ceil)
+    intersect_wh = intersect_botright - intersect_upleft
+    intersect_wh = tf.maximum(intersect_wh, 0.0)
+    intersect = tf.mul(intersect_wh[:,:,:,0], intersect_wh[:,:,:,1])
+    # calculate the IOUs
+    iou = tf.truediv(intersect, _area + area - intersect)
+    return iou
 
 def getImagelist(listfile):
     with open(listfile,'rU') as f:
@@ -336,7 +396,7 @@ def imageloadRandom(shuffle_idx, batch_index):
           orig = cv2.imread(imagepath[shuffle_idx[i]])
           # print imagepath[0]
           #orig = cv2.resize(orig,ResizeSize)
-          orig = random_hsv_image(orig, 0.01, 0.5, 0.5)
+          orig = random_distort_image(orig, 0.1, 1.5, 1.5)
           oh = orig.shape[0]
           ow = orig.shape[1]
           jitter = 0.2
@@ -524,7 +584,7 @@ class YOLO_TF:
         #    self.train_writer = tf.summary.FileWriter('log', self.sess.graph)
         self.sess.run(init)
 
-        self.checkpoint = tf.train.get_checkpoint_state("train_weight")
+        self.checkpoint = tf.train.get_checkpoint_state("train_weight_test")
         if self.checkpoint and self.checkpoint.model_checkpoint_path:
             self.saver.restore(self.sess, self.checkpoint.model_checkpoint_path)
             print "Successfully loaded:", self.checkpoint.model_checkpoint_path
@@ -643,7 +703,8 @@ class YOLO_TF:
         best_box_pre_tmp_ = tf.mul(best_box_pre_tmp, thresh_mask)
         best_box_pre = tf.reduce_sum(best_box_pre_tmp_, 1)
 
-                
+        # iou between pre and ground truth
+        #iou_coord = coord_iou(coords, _coord)
         
         # take care of the weight terms
         conid = snoob * (1. - confs) * (1. - best_box_pre) + sconf * confs
@@ -660,7 +721,7 @@ class YOLO_TF:
         loss = tf.reshape(loss, [-1, H*W*B*(4 + 1 + C)])
         loss = tf.reduce_sum(loss, 1)
         loss = .5 * tf.reduce_mean(loss)
-        return loss, iou_pre
+        return loss, best_box_pre
 
     '''
     def yololoss(self,predictions):
@@ -1119,7 +1180,7 @@ class YOLO_TF:
             if i % 10 == 0:
                 lr = 0.001
                 print "Iter:%d Lr:%f Loss:%f"%(i, lr,loss)
-                #print best_box[0,0,...]
+                #print best_box[0,:,:]
                 #f = open("out.txt", "w")
                 #print >>f, loss1
                 print '\n'
@@ -1134,14 +1195,14 @@ class YOLO_TF:
                 #test_in_dict[self.train_phase] = True                
                 #_, test_summary = self.sess.run([self.loss, self.loss_summary], feed_dict=test_in_dict)
                 #test_writer.add_summary(test_summary, global_step=i)
-            if i % 1000 == 0:
-                self.saver.save(self.sess, 'train_weight/'+'Record_2E', global_step=self.global_step)
+            if i % 1000 == 0 and i != 0:
+                self.saver.save(self.sess, 'train_weight_test/'+'Record_2E', global_step=self.global_step)
             if i % 10000 == 0 and i != 0:
                 
-                eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
-                f = open("mAP.txt", 'a+')
-                print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
-                f.close()
+                #eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
+                #f = open("mAP.txt", 'a+')
+                #print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
+                #f.close()
                 print "hahahahah!"
             batch_index += 1   
 
