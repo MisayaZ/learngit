@@ -31,7 +31,7 @@ input_size_ = 416
 batch_size = 16
 thresh = 0.24
 iouThresh = 0.4
-train_file1 = "train_16.txt"
+train_file1 = "train.txt"
 test_file = "2007_test.txt"
 TOWER_NAME = 'tower'
 anchors = [1.08, 1.19, 3.42, 4.41, 6.63, 11.38, 9.42, 5.11, 16.62, 10.52]
@@ -471,7 +471,7 @@ def do_nms_sort(boxes, probs):
             for j in range(i+1,total):
                 boxB = boxes[s[j][0]]
                 if probs[s[j][0]][k]==0 :
-                    break
+                    continue
                 if box_iou(boxA,boxB)>iouThresh:
                     probs[s[j][0]][k] = 0
                     #print "ignore BB ",i
@@ -533,39 +533,41 @@ class YOLO_TF:
 
         #weight_list = []
 
-        self.conv_1 , weight = self.conv_layer_bn("conv1",self.image,16,3,1)
+        self.conv_1 , weight = self.conv_layer_bn("conv1",self.image,16,3,1, wd=0.0005)
         weight_list.append(weight)
         self.pool_1 = self.pooling_layer("pool1",self.conv_1,2,2)
-        self.conv_2 , weight = self.conv_layer_bn("conv2",self.pool_1,32,3,1)
+        self.conv_2 , weight = self.conv_layer_bn("conv2",self.pool_1,32,3,1, wd=0.0005)
         weight_list.append(weight)
         self.pool_2 = self.pooling_layer("pool2",self.conv_2,2,2)
-        self.conv_3 , weight = self.conv_layer_bn("conv3",self.pool_2,64,3,1)
+        self.conv_3 , weight = self.conv_layer_bn("conv3",self.pool_2,64,3,1, wd=0.0005)
         weight_list.append(weight)
         self.pool_3 = self.pooling_layer("pool3",self.conv_3,2,2)
-        self.conv_4 , weight = self.conv_layer_bn("conv4",self.pool_3,128,3,1)
+        self.conv_4 , weight = self.conv_layer_bn("conv4",self.pool_3,128,3,1, wd=0.0005)
         weight_list.append(weight)
         self.pool_4 = self.pooling_layer("pool4",self.conv_4,2,2)
-        self.conv_5 , weight = self.conv_layer_bn("conv5",self.pool_4,256,3,1)
+        self.conv_5 , weight = self.conv_layer_bn("conv5",self.pool_4,256,3,1, wd=0.0005)
         weight_list.append(weight)
         self.pool_5 = self.pooling_layer("pool5",self.conv_5,2,2)
-        self.conv_6, weight  = self.conv_layer_bn("conv6",self.pool_5,512,3,1)
+        self.conv_6, weight  = self.conv_layer_bn("conv6",self.pool_5,512,3,1, wd=0.0005)
         weight_list.append(weight)
         self.pool_6 = self.pooling_layer("pool6",self.conv_6,2,1)
-        self.conv_7, weight = self.conv_layer_bn("conv7",self.pool_6,1024,3,1)
+        self.conv_7, weight = self.conv_layer_bn("conv7",self.pool_6,1024,3,1, wd=0.0005)
         weight_list.append(weight)
-        self.conv_8, weight  = self.conv_layer_bn("conv8",self.conv_7,1024,3,1)
+        self.conv_8, weight  = self.conv_layer_bn("conv8",self.conv_7,1024,3,1, wd=0.0005)
         weight_list.append(weight)
-        self.conv_9, weight, biases = self.conv_layer("conv9",self.conv_8,125,1,1,linear=True)
+        self.conv_9, weight, biases = self.conv_layer("conv9",self.conv_8,125,1,1,linear=True, wd=0.0005)
         weight_list.append(weight)
         weight_list.append(biases)
-        self.loss, self.best_box  = self.yololoss(self.conv_9)
+        self.yolo_loss, self.best_box  = self.yololoss(self.conv_9)
+        tf.add_to_collection('losses',self.yolo_loss)
+        self.loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
         self.yolopred = self.yoloout(self.conv_9)
 
         #self.global_step = tf.get_variable('global_step', [], initializer=tf.constant_initializer(0), trainable=False)
         self.global_step = tf.Variable(0,name='global_step',trainable=False)
         decay_steps = 10000
-        decay_rate = 0.95
-        learning_rate = 0.001
+        decay_rate = 0.9
+        learning_rate = 0.0001
         self.lr = tf.train.exponential_decay(learning_rate, self.global_step, decay_steps, decay_rate, staircase=True)
         self.opt = tf.train.AdamOptimizer(0.0001)
         self.grads = self.opt.compute_gradients(self.loss)
@@ -584,7 +586,7 @@ class YOLO_TF:
         #    self.train_writer = tf.summary.FileWriter('log', self.sess.graph)
         self.sess.run(init)
 
-        self.checkpoint = tf.train.get_checkpoint_state("train_weight_test")
+        self.checkpoint = tf.train.get_checkpoint_state("train_weight")
         if self.checkpoint and self.checkpoint.model_checkpoint_path:
             self.saver.restore(self.sess, self.checkpoint.model_checkpoint_path)
             print "Successfully loaded:", self.checkpoint.model_checkpoint_path
@@ -992,7 +994,7 @@ class YOLO_TF:
             outputs = activation(outputs)
         return outputs
 
-    def conv_layer_bn(self,name,inputs,filters,size,stride,linear=False):
+    def conv_layer_bn(self,name,inputs,filters,size,stride,linear=False, wd=0.0):
         with tf.variable_scope(name):
             input_h,input_w,channels = inputs.get_shape().as_list()[1:]
             scale = tf.sqrt(2.0/ (size*size*channels))
@@ -1006,6 +1008,10 @@ class YOLO_TF:
             conv = tf.nn.conv2d(inputs_pad, weight, strides=[1, stride, stride, 1], padding='VALID')
             conv_bn = self.batch_norm_layer(conv, self.train_phase, "batch_norm")    
             conv_biased = tf.add(conv_bn,biases)
+
+            if wd :
+                weight_decay =  tf.mul(tf.nn.l2_loss(weight), wd, name='weight_loss')
+                tf.add_to_collection('losses', weight_decay)
 
             tf.summary.histogram("weights", weight)
             tf.summary.histogram("biases", biases)
@@ -1028,7 +1034,7 @@ class YOLO_TF:
         if self.disp_console : print '    Layer  %d : Type = Conv, Size = %d * %d, Stride = %d, Filters = %d, Input channels = %d' % (idx,size,size,stride,filters,int(channels))
         return tf.maximum(self.alpha*conv_biased,conv_biased,name=str(idx)+'_leaky_relu'), weight, biases
 
-    def conv_layer(self,name,inputs,filters,size,stride,linear=False):
+    def conv_layer(self,name,inputs,filters,size,stride,linear=False, wd=0.0):
         with tf.variable_scope(name):
             input_h,input_w,channels = inputs.get_shape().as_list()[1:]
             scale = tf.sqrt(2.0/ (size*size*channels))
@@ -1041,6 +1047,11 @@ class YOLO_TF:
 
             conv = tf.nn.conv2d(inputs_pad, weight, strides=[1, stride, stride, 1], padding='VALID')
             conv_biased = tf.add(conv,biases)
+
+            if wd :
+                weight_decay =  tf.mul(tf.nn.l2_loss(weight), wd, name='weight_loss')
+                tf.add_to_collection('losses', weight_decay)
+
 
             tf.summary.histogram("weights", weight)
             tf.summary.histogram("biases", biases)
@@ -1095,7 +1106,7 @@ class YOLO_TF:
             lefttop = (left,top)
             rightbottom=(right,bot)
             cv2.rectangle(img, lefttop, rightbottom, (0,255,0), 2)
-            cv2.rectangle(img, (left,top-20), (right,top), (125,125,125), -1)
+            #cv2.rectangle(img, (left,top-20), (int(0.3*right),top), (125,125,125), -1)
             cv2.putText(img, self.classes[cls] + ' : %.2f' % prob,(left+5,top-7),cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,0,0),1)
             
         #strtime = str(time.time()-s)
@@ -1169,16 +1180,16 @@ class YOLO_TF:
         batch_index = 0
         for i in range(800000):
             if (batch_index * batch_size + batch_size) > datacount :
+                #print batch_index
                 shuffle_idx = np.random.permutation(np.arange(datacount))
                 batch_index = 0
             dataset, datum  = imageloadRandom(shuffle_idx, batch_index)
             in_dict = {loss_ph[key]: datum[key] for key in loss_ph}
             in_dict[self.image] = dataset
             in_dict[self.train_phase] = True
-            _, loss, lr, best_box = self.sess.run([self.train_op, self.loss, self.lr, self.best_box],feed_dict=in_dict)
+            _, loss, lr, best_box = self.sess.run([self.train_op, self.yolo_loss, self.lr, self.best_box],feed_dict=in_dict)
             # print "count: %d coord loss : %f\n"%(countobj,coord)
             if i % 10 == 0:
-                lr = 0.001
                 print "Iter:%d Lr:%f Loss:%f"%(i, lr,loss)
                 #print best_box[0,:,:]
                 #f = open("out.txt", "w")
@@ -1196,13 +1207,13 @@ class YOLO_TF:
                 #_, test_summary = self.sess.run([self.loss, self.loss_summary], feed_dict=test_in_dict)
                 #test_writer.add_summary(test_summary, global_step=i)
             if i % 1000 == 0 and i != 0:
-                self.saver.save(self.sess, 'train_weight_test/'+'Record_2E', global_step=self.global_step)
+                self.saver.save(self.sess, 'train_weight/'+'Record_2E', global_step=self.global_step)
             if i % 10000 == 0 and i != 0:
                 
-                #eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
-                #f = open("mAP.txt", 'a+')
-                #print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
-                #f.close()
+                eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
+                f = open("mAP.txt", 'a+')
+                print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
+                f.close()
                 print "hahahahah!"
             batch_index += 1   
 
