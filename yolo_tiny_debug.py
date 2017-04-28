@@ -29,7 +29,7 @@ classes_ = 20
 deep_ = classes_ + coord_
 input_size_ = 416
 batch_size = 16
-thresh = 0.24
+thresh = 0.6
 iouThresh = 0.4
 train_file1 = "train.txt"
 test_file = "2007_test.txt"
@@ -70,7 +70,7 @@ def distort_image(bgr_image, hue, sat, val):
     hsv_image = hsv_image.astype(np.uint8)
     bgr_image = cv2.cvtColor(hsv_image, cv2.COLOR_HSV2BGR)
     return bgr_image
-    
+
 
 def rand_scale(s):
     scale = np.random.uniform(1, s)
@@ -149,7 +149,7 @@ def coord_iou(coords, _coords):
     intersect_botright = tf.minimum(ceil , _ceil)
     intersect_wh = intersect_botright - intersect_upleft
     intersect_wh = tf.maximum(intersect_wh, 0.0)
-    intersect = tf.mul(intersect_wh[:,:,:,0], intersect_wh[:,:,:,1])
+    intersect = tf.multiply(intersect_wh[:,:,:,0], intersect_wh[:,:,:,1])
     # calculate the IOUs
     iou = tf.truediv(intersect, _area + area - intersect)
     return iou
@@ -480,6 +480,7 @@ weight_list = []
 
 class YOLO_TF:
     fromfile = None
+    listfile = None
     tofile_img = 'test/output.jpg'
     tofile_txt = 'test/output.txt'
     imshow = True
@@ -509,11 +510,12 @@ class YOLO_TF:
         if self.train is not False: self.training()
         if self.fromfile is not None: self.detect_from_file(self.fromfile)
         if self.test is not False: self.testAP()
+        if self.listfile is not None: self.detect_imagelist(self.listfile)
         
     def argv_parser(self,argvs):
         for i in range(1,len(argvs),2):
             if argvs[i] == '-fromfile' : self.fromfile = argvs[i+1]
-            if argvs[i] == '-tofile_img' : self.tofile_img = argvs[i+1] ; self.filewrite_img = True
+            if argvs[i] == '-fromlist' : self.listfile = argvs[i+1]
             if argvs[i] == '-tofile_txt' : self.tofile_txt = argvs[i+1] ; self.filewrite_txt = True
             if argvs[i] == '-imshow' :
                 if argvs[i+1] == '1' :self.imshow = True
@@ -528,34 +530,33 @@ class YOLO_TF:
     def build_networks(self):
       #with tf.device('/cpu:0'):
         if self.disp_console : print "Building YOLO_v2_tiny graph..."
-        self.image = tf.placeholder('float32',[None,416,416,3])
-        self.train_phase = tf.placeholder(tf.bool)
-
+        self.image = tf.placeholder('float32',[None,416,416,3], name="input")
+        self.train_phase = tf.placeholder_with_default(tf.constant(False),None, name="train_phase")
         #weight_list = []
 
-        self.conv_1 , weight = self.conv_layer_bn("conv1",self.image,16,3,1, wd=0.0005)
+        self.conv_1 , weight = self.conv_layer_bn("conv1",self.image,16,3,1, wd=0.005)
         weight_list.append(weight)
         self.pool_1 = self.pooling_layer("pool1",self.conv_1,2,2)
-        self.conv_2 , weight = self.conv_layer_bn("conv2",self.pool_1,32,3,1, wd=0.0005)
+        self.conv_2 , weight = self.conv_layer_bn("conv2",self.pool_1,32,3,1, wd=0.005)
         weight_list.append(weight)
         self.pool_2 = self.pooling_layer("pool2",self.conv_2,2,2)
-        self.conv_3 , weight = self.conv_layer_bn("conv3",self.pool_2,64,3,1, wd=0.0005)
+        self.conv_3 , weight = self.conv_layer_bn("conv3",self.pool_2,64,3,1, wd=0.005)
         weight_list.append(weight)
         self.pool_3 = self.pooling_layer("pool3",self.conv_3,2,2)
-        self.conv_4 , weight = self.conv_layer_bn("conv4",self.pool_3,128,3,1, wd=0.0005)
+        self.conv_4 , weight = self.conv_layer_bn("conv4",self.pool_3,128,3,1, wd=0.005)
         weight_list.append(weight)
         self.pool_4 = self.pooling_layer("pool4",self.conv_4,2,2)
-        self.conv_5 , weight = self.conv_layer_bn("conv5",self.pool_4,256,3,1, wd=0.0005)
+        self.conv_5 , weight = self.conv_layer_bn("conv5",self.pool_4,256,3,1, wd=0.005)
         weight_list.append(weight)
         self.pool_5 = self.pooling_layer("pool5",self.conv_5,2,2)
-        self.conv_6, weight  = self.conv_layer_bn("conv6",self.pool_5,512,3,1, wd=0.0005)
+        self.conv_6, weight  = self.conv_layer_bn("conv6",self.pool_5,512,3,1, wd=0.005)
         weight_list.append(weight)
         self.pool_6 = self.pooling_layer("pool6",self.conv_6,2,1)
-        self.conv_7, weight = self.conv_layer_bn("conv7",self.pool_6,1024,3,1, wd=0.0005)
+        self.conv_7, weight = self.conv_layer_bn("conv7",self.pool_6,1024,3,1, wd=0.005)
         weight_list.append(weight)
-        self.conv_8, weight  = self.conv_layer_bn("conv8",self.conv_7,1024,3,1, wd=0.0005)
+        self.conv_8, weight  = self.conv_layer_bn("conv8",self.conv_7,1024,3,1, wd=0.005)
         weight_list.append(weight)
-        self.conv_9, weight, biases = self.conv_layer("conv9",self.conv_8,125,1,1,linear=True, wd=0.0005)
+        self.conv_9, weight, biases = self.conv_layer("conv9",self.conv_8,125,1,1,linear=True, wd=0.005)
         weight_list.append(weight)
         weight_list.append(biases)
         self.yolo_loss, self.best_box  = self.yololoss(self.conv_9)
@@ -569,10 +570,12 @@ class YOLO_TF:
         decay_rate = 0.9
         learning_rate = 0.0001
         self.lr = tf.train.exponential_decay(learning_rate, self.global_step, decay_steps, decay_rate, staircase=True)
-        self.opt = tf.train.AdamOptimizer(0.0001)
+        self.opt = tf.train.AdamOptimizer(0.0005)
         self.grads = self.opt.compute_gradients(self.loss)
         self.apply_gradient_op = self.opt.apply_gradients(self.grads, global_step=self.global_step)
-        self.train_op = self.apply_gradient_op
+        batchnorm_updates = tf.get_collection(UPDATE_OPS_COLLECTION)
+        self.batchnorm_updates_op = tf.group(*batchnorm_updates)
+        self.train_op = tf.group(self.apply_gradient_op, self.batchnorm_updates_op)
 
         self.loss_summary = tf.summary.scalar("loss", self.loss)
         self.merged_summary_op = tf.summary.merge_all()
@@ -600,20 +603,22 @@ class YOLO_TF:
         self.all_anchors = zeros_array + anchors
 
     def yoloout(self, predictions):
-        predictions = tf.reshape(predictions, [1, side_, side_, num, -1])
-        pre_obj = predictions[:, :, :, :, 4]
-        pre_obj = tf.sigmoid(pre_obj)
-        pre_obj = tf.expand_dims(pre_obj, dim=4)
-        pre_coord = predictions[:, :, :, :, 0:4]
-        pre_class = predictions[:, :, : ,:, 5:25]
-        pre_class = tf.reshape(pre_class, [-1, 20])
-        pre_class = tf.nn.softmax(pre_class)
-        pre_class = tf.reshape(pre_class, [1, side_, side_, num, 20])
-        pre_out = tf.concat(4, [pre_coord, pre_obj, pre_class])
-        pre_out = tf.reshape(pre_out, [1, side_, side_, num*25])
-        return pre_out
+        with tf.name_scope("output") as scope:
+            predictions = tf.reshape(predictions, [1, side_, side_, num, -1])
+            pre_obj = predictions[:, :, :, :, 4]
+            pre_obj = tf.sigmoid(pre_obj)
+            pre_obj = tf.expand_dims(pre_obj, dim=4)
+            pre_coord = predictions[:, :, :, :, 0:4]
+            pre_class = predictions[:, :, : ,:, 5:25]
+            pre_class = tf.reshape(pre_class, [-1, 20])
+            pre_class = tf.nn.softmax(pre_class)
+            pre_class = tf.reshape(pre_class, [1, side_, side_, num, 20])
+            pre_out = tf.concat([pre_coord, pre_obj, pre_class], 4)
+            pre_out = tf.reshape(pre_out, [1, side_, side_, num*25], name=scope)
+            return pre_out
 
     def yololoss(self, predictions):
+      with tf.name_scope("loss") as scope:
         size1 = [None, HW, B, C]
         size2 = [None, HW, B]
         size3 = [None, 30, HW, B]
@@ -649,7 +654,7 @@ class YOLO_TF:
         coords = tf.reshape(coords, [-1, H*W, B, 4])
         adjusted_coords_xy = expit_tensor(coords[:,:,:,0:2])
         adjusted_coords_wh = tf.exp(coords[:,:,:,2:4]) * np.reshape(anchors, [1, 1, B, 2]) / np.reshape([W, H], [1, 1, 1, 2])
-        coords = tf.concat(3, [adjusted_coords_xy, adjusted_coords_wh])
+        coords = tf.concat([adjusted_coords_xy, adjusted_coords_wh], 3)
 
         adjusted_c = expit_tensor(net_out_reshape[:, :, :, :, 4])
         adjusted_c = tf.reshape(adjusted_c, [-1, H*W, B, 1])
@@ -657,7 +662,7 @@ class YOLO_TF:
         adjusted_prob = tf.nn.softmax(net_out_reshape[:, :, :, :, 5:])
         adjusted_prob = tf.reshape(adjusted_prob, [-1, H*W, B, C])
 
-        adjusted_net_out = tf.concat(3, [adjusted_coords_xy, adjusted_coords_wh, adjusted_c, adjusted_prob])        
+        adjusted_net_out = tf.concat([adjusted_coords_xy, adjusted_coords_wh, adjusted_c, adjusted_prob], 3)
 
         wh = np.reshape(anchors, [1, 1, B, 2]) / np.reshape([W, H], [1, 1, 1, 2])
         wh = tf.constant(wh, dtype=tf.float32)
@@ -673,13 +678,13 @@ class YOLO_TF:
         intersect_botright = tf.minimum(ceil , _botright)
         intersect_wh = intersect_botright - intersect_upleft
         intersect_wh = tf.maximum(intersect_wh, 0.0)
-        intersect = tf.mul(intersect_wh[:,:,:,0], intersect_wh[:,:,:,1])
+        intersect = tf.multiply(intersect_wh[:,:,:,0], intersect_wh[:,:,:,1])
 
         # calculate the best IOU, set 0.0 confidence for worse boxes
         iou = tf.truediv(intersect, _areas + area_pred - intersect)
         best_box = tf.equal(iou, tf.reduce_max(iou, [2], True))
         best_box = tf.to_float(best_box)
-        confs = tf.mul(best_box, _confs)
+        confs = tf.multiply(best_box, _confs)
 
         # calculate the best IOU for every cell 
         wh_pre = coords[:, :, :, 2:4]
@@ -698,11 +703,11 @@ class YOLO_TF:
         intersect_botright_pre = tf.minimum(ceil_pre, _global_botright)
         intersect_wh_pre = intersect_botright_pre - intersect_upleft_pre
         intersect_wh_pre = tf.maximum(intersect_wh_pre, 0.0)
-        intersect_pre = tf.mul(intersect_wh_pre[:, :, :, :, 0], intersect_wh_pre[:, :, :, :, 1])
+        intersect_pre = tf.multiply(intersect_wh_pre[:, :, :, :, 0], intersect_wh_pre[:, :, :, :, 1])
         iou_pre = tf.truediv(intersect_pre, _global_areas + area_pre - intersect_pre)
         best_box_pre_tmp = tf.to_float(tf.equal(iou_pre, tf.reduce_max(iou_pre,[1], True)))
         thresh_mask = tf.to_float(tf.greater(iou_pre, 0.6))
-        best_box_pre_tmp_ = tf.mul(best_box_pre_tmp, thresh_mask)
+        best_box_pre_tmp_ = tf.multiply(best_box_pre_tmp, thresh_mask)
         best_box_pre = tf.reduce_sum(best_box_pre_tmp_, 1)
 
         # iou between pre and ground truth
@@ -710,16 +715,16 @@ class YOLO_TF:
         
         # take care of the weight terms
         conid = snoob * (1. - confs) * (1. - best_box_pre) + sconf * confs
-        weight_coo = tf.concat(3, 4 * [tf.expand_dims(confs, -1)])
+        weight_coo = tf.concat(4 * [tf.expand_dims(confs, -1)], 3)
         cooid = scoor * weight_coo
-        weight_pro = tf.concat(3, C * [tf.expand_dims(confs, -1)])
+        weight_pro = tf.concat(C * [tf.expand_dims(confs, -1)], 3)
         proid = sprob * weight_pro 
 
-        true = tf.concat(3, [_coord, tf.expand_dims(confs, 3), _probs ])
-        wght = tf.concat(3, [cooid, tf.expand_dims(conid, 3), proid ])
+        true = tf.concat([_coord, tf.expand_dims(confs, 3), _probs ], 3)
+        wght = tf.concat([cooid, tf.expand_dims(conid, 3), proid ], 3)
 
         loss = tf.pow(adjusted_net_out - true, 2)
-        loss = tf.mul(loss, wght)
+        loss = tf.multiply(loss, wght)
         loss = tf.reshape(loss, [-1, H*W*B*(4 + 1 + C)])
         loss = tf.reduce_sum(loss, 1)
         loss = .5 * tf.reduce_mean(loss)
@@ -778,19 +783,19 @@ class YOLO_TF:
         intersect_botright = tf.minimum(ceil , _botright)
         intersect_wh = intersect_botright - intersect_upleft
         intersect_wh = tf.maximum(intersect_wh, 0.0)
-        intersect = tf.mul(intersect_wh[:,:,:,:,0], intersect_wh[:,:,:,:, 1])
+        intersect = tf.multiply(intersect_wh[:,:,:,:,0], intersect_wh[:,:,:,:, 1])
  
         # calculate the best IOU, set0.0 confidence for worse boxes
         iou = tf.truediv(intersect, _areas + area - intersect)
         best_box = tf.equal(iou, tf.reduce_max(iou, [3], True))
         best_box = tf.to_float(best_box)
-        confs = tf.mul(best_box, _confs)
+        confs = tf.multiply(best_box, _confs)
 
         # calculate the best IOU for each prediction which greater than an threshold
         transform_array = tf.expand_dims(tf.constant(generate_posarray(), dtype=tf.float32), dim=2)
         transform_array = tf.concat(2, num * [transform_array])
         self.pre_xy_tran =  tf.truediv(self.pre_xy + transform_array, 13.)
-        self.pre_wh_tran =  tf.truediv(tf.mul(tf.exp(self.pre_wh), self.all_anchors[:, :, :, :, 2:4]), 13.)
+        self.pre_wh_tran =  tf.truediv(tf.multiply(tf.exp(self.pre_wh), self.all_anchors[:, :, :, :, 2:4]), 13.)
         area_pred = self.pre_wh_tran[:, :, :, :, 0] * self.pre_wh_tran[:, :, :, :, 1]
         floor_pred = self.pre_xy_tran - (self.pre_wh_tran * .5)
         ceil_pred = self.pre_xy_tran + (self.pre_wh_tran * .5)
@@ -801,11 +806,11 @@ class YOLO_TF:
         intersect_botright_pre = tf.minimum(ceil_pred, _global_botright)
         intersect_wh_pre = intersect_botright_pre - intersect_upleft_pre
         intersect_wh_pre = tf.maximum(intersect_wh_pre, 0.0)
-        intersect_pre = tf.mul(intersect_wh_pre[:, :, :, :, :, 0], intersect_wh_pre[:, :, :, :, :, 1])
+        intersect_pre = tf.multiply(intersect_wh_pre[:, :, :, :, :, 0], intersect_wh_pre[:, :, :, :, :, 1])
         iou_pre = tf.truediv(intersect_pre, _global_areas + area_pred - intersect_pre + 0.000001)
         best_box_pre_tmp = tf.to_float(tf.equal(iou_pre, tf.reduce_max(iou_pre,[1], True)))
         thresh_mask = tf.to_float(tf.greater(iou_pre, 0.6))
-        best_box_pre_tmp_ = tf.mul(best_box_pre_tmp, thresh_mask)
+        best_box_pre_tmp_ = tf.multiply(best_box_pre_tmp, thresh_mask)
         best_box_pre = tf.reduce_sum(best_box_pre_tmp_, 1)
         
          
@@ -814,21 +819,21 @@ class YOLO_TF:
         coord_idx = self.coord_scale * tf.concat(4, 4 * [tf.expand_dims(confs, -1)])
         pro_idx = self.class_scale * tf.concat(4, 20 * [tf.expand_dims(confs, -1)])
 
-        #con_loss = tf.mul(tf.pow(self.pre_obj - confs, 2), con_idx)
+        #con_loss = tf.multiply(tf.pow(self.pre_obj - confs, 2), con_idx)
         #self.con_loss_sum = tf.reduce_sum(con_loss, [1,2,3])
-        #coord_loss = tf.mul(tf.pow(self.pre_coord - _coord, 2), coord_idx)
+        #coord_loss = tf.multiply(tf.pow(self.pre_coord - _coord, 2), coord_idx)
         #self.coord_loss_sum = tf.reduce_sum(coord_loss, [1,2,3,4])
-        #class_loss = tf.mul(tf.pow(self.pre_class - _probs, 2), pro_idx) 
+        #class_loss = tf.multiply(tf.pow(self.pre_class - _probs, 2), pro_idx) 
         #self.class_loss_sum = tf.reduce_sum(class_loss, [1,2,3,4])
         #loss = tf.reduce_mean(self.con_loss_sum + self.coord_loss_sum + self.class_loss_sum)
 
-        con_loss = tf.mul(tf.pow(self.pre_obj - confs, 2), con_idx)
+        con_loss = tf.multiply(tf.pow(self.pre_obj - confs, 2), con_idx)
         con_loss_sum = tf.reduce_sum(con_loss, [1,2,3])
         self.con_loss = tf.reduce_mean(con_loss_sum)
-        coord_loss = tf.mul(tf.pow(self.pre_coord - _coord, 2), coord_idx)
+        coord_loss = tf.multiply(tf.pow(self.pre_coord - _coord, 2), coord_idx)
         coord_loss_sum = tf.reduce_sum(coord_loss, [1,2,3,4])
         self.coord_loss = tf.reduce_mean(coord_loss_sum)
-        class_loss = tf.mul(tf.pow(self.pre_class - _probs, 2), pro_idx)
+        class_loss = tf.multiply(tf.pow(self.pre_class - _probs, 2), pro_idx)
         class_loss_sum = tf.reduce_sum(class_loss, [1,2,3,4])
         self.class_loss = tf.reduce_mean(class_loss_sum)
         loss = self.con_loss + self.coord_loss + self.class_loss
@@ -893,9 +898,9 @@ class YOLO_TF:
         return z
 
 
-    def batch_norm_delete(self,
+    def batch_norm(self,
                    inputs,
-                   decay=0.999,
+                   decay=0.9,
                    center=True,
                    scale=True,
                    epsilon=0.001,
@@ -927,72 +932,73 @@ class YOLO_TF:
         Returns:
           a tensor representing the output of the operation.
         """
-        inputs_shape = inputs.get_shape()
-        axis = list(range(len(inputs_shape) - 1))
-        params_shape = inputs_shape[-1:]
-        # Allocate parameters for the beta and gamma of the normalization.
-        beta, gamma = None, None
-        if center:
-            beta = self.variable('beta',
-                                 params_shape,
-                                 initializer=tf.zeros_initializer(),
-                                 trainable=trainable,
-                                 restore=restore)
-        if scale:
-            gamma = self.variable('gamma',
-                                  params_shape,
-                                  initializer=tf.ones_initializer(),
-                                  trainable=trainable,
-                                  restore=restore)
-        # Create moving_mean and moving_variance add them to
-        # GraphKeys.MOVING_AVERAGE_VARIABLES collections.
-        moving_collections = [moving_vars, tf.GraphKeys.MOVING_AVERAGE_VARIABLES]
-        moving_mean = self.variable('moving_mean',
-                                    params_shape,
-                                    initializer=tf.zeros_initializer(),
-                                    trainable=False,
-                                    restore=restore,
-                                    collections=moving_collections)
-        moving_variance = self.variable('moving_variance',
+        with tf.variable_scope(scope) :
+            inputs_shape = inputs.get_shape()
+            axis = list(range(len(inputs_shape) - 1))
+            params_shape = inputs_shape[-1:]
+            # Allocate parameters for the beta and gamma of the normalization.
+            beta, gamma = None, None
+            if center:
+                beta = self.variable('beta',
+                                     params_shape,
+                                     initializer=tf.zeros_initializer(),
+                                     trainable=trainable,
+                                     restore=restore)
+            if scale:
+                gamma = self.variable('gamma',
+                                      params_shape,
+                                      initializer=tf.ones_initializer(),
+                                      trainable=trainable,
+                                      restore=restore)
+            # Create moving_mean and moving_variance add them to
+            # GraphKeys.MOVING_AVERAGE_VARIABLES collections.
+            moving_collections = [moving_vars, tf.GraphKeys.MOVING_AVERAGE_VARIABLES]
+            moving_mean = self.variable('moving_mean',
                                         params_shape,
-                                        initializer=tf.ones_initializer(),
+                                        initializer=tf.zeros_initializer(),
                                         trainable=False,
                                         restore=restore,
                                         collections=moving_collections)
+            moving_variance = self.variable('moving_variance',
+                                            params_shape,
+                                            initializer=tf.ones_initializer(),
+                                            trainable=False,
+                                            restore=restore,
+                                            collections=moving_collections)
 
-        def if_true():
-            mean, variance = tf.nn.moments(inputs, axis)
-            update_moving_mean = moving_averages.assign_moving_average(moving_mean, mean, decay)
-            tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_mean)
-            update_moving_variance = moving_averages.assign_moving_average(moving_variance, variance, decay)
-            tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_variance)
-            return mean, variance
+            def if_true():
+                mean, variance = tf.nn.moments(inputs, axis)
+                update_moving_mean = moving_averages.assign_moving_average(moving_mean, mean, decay)
+                tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_mean)
+                update_moving_variance = moving_averages.assign_moving_average(moving_variance, variance, decay)
+                tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_variance)
+                return mean, variance
 
-        def if_false():
-            mean = moving_mean
-            variance = moving_variance
-            return mean, variance
+            def if_false():
+                mean = moving_mean
+                variance = moving_variance
+                return mean, variance
 
-        mean, variance = tf.cond(is_training, if_true, if_false)
-        '''
-        if is_training:
-            # Calculate the moments based on the individual batch.
-            mean, variance = tf.nn.moments(inputs, axis)
-            update_moving_mean = moving_averages.assign_moving_average(moving_mean, mean, decay)
-            tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_mean)
-            update_moving_variance = moving_averages.assign_moving_average(moving_variance, variance, decay)
-            tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_variance)
-        else:
-            # Just use the moving_mean and moving_variance.
-            mean = moving_mean
-            variance = moving_variance
-        '''
-        # Normalize the activations.
-        outputs = tf.nn.batch_normalization(inputs, mean, variance, beta, gamma, epsilon)
-        outputs.set_shape(inputs.get_shape()) 
-        if activation:
-            outputs = activation(outputs)
-        return outputs
+            mean, variance = tf.cond(is_training, if_true, if_false)
+            '''
+            if is_training:
+                # Calculate the moments based on the individual batch.
+                mean, variance = tf.nn.moments(inputs, axis)
+                update_moving_mean = moving_averages.assign_moving_average(moving_mean, mean, decay)
+                tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_mean)
+                update_moving_variance = moving_averages.assign_moving_average(moving_variance, variance, decay)
+                tf.add_to_collection(UPDATE_OPS_COLLECTION, update_moving_variance)
+            else:
+                # Just use the moving_mean and moving_variance.
+                mean = moving_mean
+                variance = moving_variance
+            '''
+            # Normalize the activations.
+            outputs = tf.nn.batch_normalization(inputs, mean, variance, beta, gamma, epsilon)
+            outputs.set_shape(inputs.get_shape())
+            if activation:
+                outputs = activation(outputs)
+            return outputs
 
     def conv_layer_bn(self,name,inputs,filters,size,stride,linear=False, wd=0.0):
         with tf.variable_scope(name):
@@ -1006,11 +1012,11 @@ class YOLO_TF:
             inputs_pad = tf.pad(inputs,pad_mat)
 
             conv = tf.nn.conv2d(inputs_pad, weight, strides=[1, stride, stride, 1], padding='VALID')
-            conv_bn = self.batch_norm_layer(conv, self.train_phase, "batch_norm")    
+            conv_bn = self.batch_norm(conv, center = False, is_training = self.train_phase, scope = "batch_norm")
             conv_biased = tf.add(conv_bn,biases)
 
             if wd :
-                weight_decay =  tf.mul(tf.nn.l2_loss(weight), wd, name='weight_loss')
+                weight_decay =  tf.multiply(tf.nn.l2_loss(weight), wd, name='weight_loss')
                 tf.add_to_collection('losses', weight_decay)
 
             tf.summary.histogram("weights", weight)
@@ -1049,7 +1055,7 @@ class YOLO_TF:
             conv_biased = tf.add(conv,biases)
 
             if wd :
-                weight_decay =  tf.mul(tf.nn.l2_loss(weight), wd, name='weight_loss')
+                weight_decay =  tf.multiply(tf.nn.l2_loss(weight), wd, name='weight_loss')
                 tf.add_to_collection('losses', weight_decay)
 
 
@@ -1171,6 +1177,14 @@ class YOLO_TF:
         else : intersection =  tb*lr
         return intersection / (box1[2]*box1[3] + box2[2]*box2[3] - intersection)
 
+    def detect_imagelist(self, listfile):
+        with open(listfile,'rU') as f:
+            imagepaths = [word.strip('\n') for word in f]
+        m = len(imagepaths)
+        for i in xrange(m):
+            testimagefile= imagepaths[i]
+            self.detect_from_file(testimagefile)
+
     def training(self): #TODO add training function!
         loss_ph = self.placeholders
         train_writer = tf.summary.FileWriter('log/train', self.sess.graph)
@@ -1210,10 +1224,10 @@ class YOLO_TF:
                 self.saver.save(self.sess, 'train_weight/'+'Record_2E', global_step=self.global_step)
             if i % 10000 == 0 and i != 0:
                 
-                eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
-                f = open("mAP.txt", 'a+')
-                print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
-                f.close()
+                #eval_tf = EVA_TF(self.sess, self.image, self.train_phase, self.yolopred)
+                #f = open("mAP.txt", 'a+')
+                #print>>f, 'Mean AP = {:.4f} i = {}'.format(np.mean(eval_tf.mAP), i)
+                #f.close()
                 print "hahahahah!"
             batch_index += 1   
 
